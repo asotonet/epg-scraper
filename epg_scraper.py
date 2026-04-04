@@ -99,10 +99,22 @@ def _to_xmltv_time(dt: datetime) -> str:
 
 
 def _channel_id(href_slug: str, name: str) -> str:
-    """Genera un ID de canal estable a partir del slug de la URL del canal."""
-    if href_slug:
-        return href_slug
-    return re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_")[:40]
+    """Genera un ID de canal estable a partir del slug de la URL del canal (max 40 chars)."""
+    slug = href_slug if href_slug else re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_")
+    return slug[:40]
+
+
+# Mapeo de categorías internas → estándar EIT/XMLTV
+CATEGORY_MAP = {
+    "programa":   "Show / Game show",
+    "pelicula":   "Movie / Drama",
+    "noticiero":  "News / Current affairs",
+    "caricatura": "Children's / Youth programmes",
+    "deporte":    "Sports",
+    "documental": "Documentary",
+    "musica":     "Music / Ballet / Dance",
+    "telenovela": "Movie / Drama",
+}
 
 
 def parse_guide_page(
@@ -263,7 +275,7 @@ def parse_guide_page(
                         "title":    title,
                         "start":    _to_xmltv_time(prog_start) if prog_start else None,
                         "stop":     _to_xmltv_time(prog_stop)  if prog_stop  else None,
-                        "category": cat,
+                        "category": CATEGORY_MAP.get(cat, cat),
                     })
 
             offset_min += colspan
@@ -349,7 +361,7 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
         ET.SubElement(prog_el, "desc", lang="es").text = p["title"]
 
         if p.get("category"):
-            ET.SubElement(prog_el, "category", lang="es").text = p["category"]
+            ET.SubElement(prog_el, "category", lang="en").text = p["category"]
 
     # Pretty-print
     raw = ET.tostring(root, encoding="unicode")
