@@ -435,8 +435,9 @@ def install_cron(interval_hours: int, script_path: str, output_path: str, days: 
         cron_expr = f"0 0/{interval_hours} * * *"
 
     cmd = f"{python} {abs_script} --days {days} --output {abs_output}"
-    cron_line = f"{cron_expr} {cmd} >> /var/log/epg_scraper.log 2>&1"
-    marker = "# gatotv-epg-scraper"
+    log_file = Path(abs_script).parent / "epg_scraper.log"
+    cron_line = f"{cron_expr} {cmd} >> {log_file} 2>&1"
+    marker = "# epg-scraper"
 
     try:
         existing = subprocess.check_output(
@@ -455,7 +456,7 @@ def install_cron(interval_hours: int, script_path: str, output_path: str, days: 
         print(f"Cron instalado: actualiza cada {interval_hours}h")
         print(f"  Expresión : {cron_expr}")
         print(f"  Comando   : {cmd}")
-        print(f"  Log       : /var/log/epg_scraper.log")
+        print(f"  Log       : {log_file}")
     else:
         print("Error al instalar cron. Añade manualmente:")
         print(f"  {cron_line}")
@@ -488,8 +489,9 @@ def main():
                         help="Fecha específica")
     parser.add_argument("--days", type=int, default=2,
                         help="Días a raspar desde hoy (default: 2)")
-    parser.add_argument("--output", default="/home/asoto/epg.xml",
-                        help="Archivo de salida (default: /home/asoto/epg.xml)")
+    parser.add_argument("--output",
+                        default=str(Path(__file__).parent / "epg.xml"),
+                        help="Archivo de salida (default: epg.xml junto al script)")
     parser.add_argument("--daemon", action="store_true",
                         help="Actualizar periódicamente en background")
     parser.add_argument("--interval", type=int, default=6,
