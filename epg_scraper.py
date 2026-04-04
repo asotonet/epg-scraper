@@ -418,6 +418,59 @@ def run_scrape(args):
         f"EPG listo: {len(all_channels)} canales, "
         f"{len(all_programs)} programas → {args.output}"
     )
+    git_commit_and_push(args.output)
+
+
+# ─── Git ──────────────────────────────────────────────────────────────────────
+
+def git_commit_and_push(output_path: str, retries: int = 3, retry_delay: int = 30):
+    """
+    Hace commit del epg.xml actualizado y lo sube al repositorio remoto.
+    - Solo hace commit si el archivo realmente cambió (evita commits vacíos).
+    - Espera unos segundos antes de hacer push para dejar que el disco termine de escribir.
+    - Reintenta el push en caso de error de red.
+    """
+    repo_dir = Path(output_path).parent.resolve()
+    xml_file = Path(output_path).name
+
+    def run(cmd):
+        return subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+
+    # Verificar que es un repo git
+    if run(["git", "rev-parse", "--git-dir"]).returncode != 0:
+        log.warning("El directorio de salida no es un repositorio git. Skipping push.")
+        return
+
+    # Pequeña pausa para asegurar escritura completa en disco
+    time.sleep(5)
+
+    # ¿Cambió el archivo respecto al último commit?
+    diff = run(["git", "diff", "--quiet", xml_file])
+    untracked = run(["git", "ls-files", "--others", "--exclude-standard", xml_file])
+    if diff.returncode == 0 and not untracked.stdout.strip():
+        log.info("git: epg.xml sin cambios, no se hace commit.")
+        return
+
+    # Stage y commit
+    run(["git", "add", xml_file])
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    commit = run(["git", "commit", "-m", f"EPG actualizado {timestamp}"])
+    if commit.returncode != 0:
+        log.error(f"git commit falló: {commit.stderr.strip()}")
+        return
+    log.info(f"git: commit — EPG actualizado {timestamp}")
+
+    # Push con reintentos
+    for attempt in range(1, retries + 1):
+        push = run(["git", "push"])
+        if push.returncode == 0:
+            log.info("git: push exitoso.")
+            return
+        log.warning(f"git push intento {attempt}/{retries} falló: {push.stderr.strip()}")
+        if attempt < retries:
+            time.sleep(retry_delay)
+
+    log.error("git: push falló después de todos los intentos.")
 
 
 # ─── Cron ─────────────────────────────────────────────────────────────────────
