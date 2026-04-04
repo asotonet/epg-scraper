@@ -98,12 +98,11 @@ def _to_xmltv_time(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M%S ") + TIMEZONE
 
 
-def _channel_id(name: str, number: str) -> str:
-    """Genera un ID de canal estable."""
-    if number.strip().isdigit():
-        return f"ch{number.strip()}"
-    slug = re.sub(r"[^a-z0-9]", "_", name.lower()).strip("_")
-    return f"ch_{slug[:30]}"
+def _channel_id(href_slug: str, name: str) -> str:
+    """Genera un ID de canal estable a partir del slug de la URL del canal."""
+    if href_slug:
+        return href_slug
+    return re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_")[:40]
 
 
 def parse_guide_page(
@@ -178,37 +177,36 @@ def parse_guide_page(
         # — Info del canal (primera celda) ————————————————————————————————————
         ch_td = tds[0]
 
-        num_el = ch_td.select_one(".div_channel_number")
-        ch_number = num_el.get_text(strip=True) if num_el else ""
-
         logo_el = ch_td.select_one("img[src]")
         ch_logo = logo_el["src"] if logo_el else ""
         if ch_logo.startswith("//"):
             ch_logo = "https:" + ch_logo
 
-        # El primer <a href=/canal/> contiene la imagen (texto vacío);
-        # el segundo contiene el nombre del canal.
+        # Extraer slug del href (ej: /canal/azteca_guatemala/2026-04-04 → azteca_guatemala)
+        ch_slug = ""
         ch_name = ""
         for a_el in ch_td.select("a[href*='/canal/']"):
+            if not ch_slug:
+                m = re.search(r"/canal/([^/]+)/", a_el.get("href", ""))
+                if m:
+                    ch_slug = m.group(1)
             txt = a_el.get_text(strip=True)
-            if txt:
+            if txt and not ch_name:
                 ch_name = txt
-                break
+
         if not ch_name:
-            # Fallback: atributo title del enlace
             a_el = ch_td.select_one("a[href*='/canal/'][title]")
             if a_el:
-                ch_name = a_el.get("title", "").replace("Canal ", "").strip()
+                ch_name = a_el.get("title", "").strip()
 
         if not ch_name:
             continue
 
-        ch_id = _channel_id(ch_name, ch_number)
+        ch_id = _channel_id(ch_slug, ch_name)
         if ch_id not in channels:
             channels[ch_id] = {
-                "name":   ch_name,
-                "logo":   ch_logo,
-                "number": ch_number,
+                "name": ch_name,
+                "logo": ch_logo,
             }
 
         # — Programas (resto de celdas) ────────────────────────────────────────
@@ -324,20 +322,10 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
     """Genera el XML en formato XMLTV estándar (compatible con la mayoría de servidores EPG)."""
     root = ET.Element("tv")
     root.set("source-info-name", "EPG Scraper")
-    root.set("generator-info-name", "epg-scraper")
 
     # ── <channel> ─────────────────────────────────────────────────────────────
-    def ch_sort_key(item):
-        n = item[1]["number"]
-        try:
-            return (0, int(n))
-        except (ValueError, TypeError):
-            return (1, n or "")
-
-    for ch_id, ch in sorted(all_channels.items(), key=ch_sort_key):
+    for ch_id, ch in sorted(all_channels.items(), key=lambda x: x[0]):
         ch_el = ET.SubElement(root, "channel", id=ch_id)
-        if ch["number"]:
-            ET.SubElement(ch_el, "display-name").text = ch["number"]
         ET.SubElement(ch_el, "display-name").text = ch["name"]
         if ch["logo"]:
             ET.SubElement(ch_el, "icon", src=ch["logo"])
@@ -374,7 +362,6 @@ def save_xmltv(xml_content: str, output_path: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write('<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
         f.write(xml_content)
     log.info(f"Guardado: {path.resolve()}")
 
