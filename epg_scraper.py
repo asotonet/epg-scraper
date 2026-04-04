@@ -322,6 +322,7 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
     """Genera el XML en formato XMLTV estándar (compatible con la mayoría de servidores EPG)."""
     root = ET.Element("tv")
     root.set("source-info-name", "EPG Scraper")
+    root.set("source-info-url", BASE_URL)
 
     # ── <channel> ─────────────────────────────────────────────────────────────
     for ch_id, ch in sorted(all_channels.items(), key=lambda x: x[0]):
@@ -331,17 +332,21 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
             ET.SubElement(ch_el, "icon", src=ch["logo"])
 
     # ── <programme> ──────────────────────────────────────────────────────────
+    # Orden de atributos: start, stop, channel (requerido por parsers estrictos)
     for p in sorted(all_programs, key=lambda x: (x["channel"], x["start"] or "")):
         if not p["start"]:
-            continue  # sin start no es válido en XMLTV
+            continue
 
-        attrs = {"start": p["start"], "channel": p["channel"]}
+        prog_el = ET.SubElement(root, "programme")
+        prog_el.set("start", p["start"])
         if p["stop"]:
-            attrs["stop"] = p["stop"]
+            prog_el.set("stop", p["stop"])
+        prog_el.set("channel", p["channel"])
 
-        prog_el = ET.SubElement(root, "programme", **attrs)
-        title_el = ET.SubElement(prog_el, "title", lang="es")
-        title_el.text = p["title"]
+        ET.SubElement(prog_el, "title", lang="es").text = p["title"]
+
+        # <desc> requerido por algunos parsers; usamos el título como fallback
+        ET.SubElement(prog_el, "desc", lang="es").text = p["title"]
 
         if p.get("category"):
             ET.SubElement(prog_el, "category", lang="es").text = p["category"]
