@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE tv SYSTEM "xmltv.dtd">
-<tv source-info-name="GatoTV - Guía Completa" source-info-url="https://www.gatotv.com/guia_tv/completa" generator-info-name="gatotv-epg-scraper">
+<tv source-info-name="EPG Scraper" generator-info-name="epg-scraper">
   <channel id="ch1">
     <display-name>1</display-name>
     <display-name>1 Colombia</display-name>
