@@ -22,7 +22,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from xml.dom import minidom
 from xml.etree import ElementTree as ET
 
 try:
@@ -349,6 +348,18 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
         if not p["start"]:
             continue
 
+        # Filtrar programas menores a 5 minutos (artefactos del scraper)
+        if p["start"] and p["stop"]:
+            s = p["start"].split()[0]
+            e = p["stop"].split()[0]
+            try:
+                ds = datetime.strptime(s, "%Y%m%d%H%M%S")
+                de = datetime.strptime(e, "%Y%m%d%H%M%S")
+                if (de - ds).seconds < 300 and (de - ds).days == 0:
+                    continue
+            except ValueError:
+                pass
+
         prog_el = ET.SubElement(root, "programme")
         prog_el.set("start", p["start"])
         if p["stop"]:
@@ -363,22 +374,15 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
         if p.get("category"):
             ET.SubElement(prog_el, "category", lang="en").text = p["category"]
 
-    # Pretty-print
-    raw = ET.tostring(root, encoding="unicode")
-    dom = minidom.parseString(raw)
-    pretty = dom.toprettyxml(indent="  ")
-    # Quitar la declaración XML que pone minidom (la añadimos nosotros al guardar)
-    lines = pretty.splitlines()
-    if lines and lines[0].startswith("<?xml"):
-        lines = lines[1:]
-    return "\n".join(lines)
+    # XML compacto (sin pretty-print) para mantener el archivo lo más pequeño posible
+    return ET.tostring(root, encoding="unicode")
 
 
 def save_xmltv(xml_content: str, output_path: str):
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write('<?xml version="1.0" encoding="UTF-8"?>')
         f.write(xml_content)
     log.info(f"Guardado: {path.resolve()}")
 
@@ -544,8 +548,8 @@ def main():
     )
     parser.add_argument("--date", metavar="YYYY-MM-DD",
                         help="Fecha específica")
-    parser.add_argument("--days", type=int, default=2,
-                        help="Días a raspar desde hoy (default: 2)")
+    parser.add_argument("--days", type=int, default=7,
+                        help="Días a raspar desde hoy (default: 7)")
     parser.add_argument("--output",
                         default=str(Path(__file__).parent / "epg.xml"),
                         help="Archivo de salida (default: epg.xml junto al script)")
