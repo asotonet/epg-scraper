@@ -16,6 +16,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import logging
 import re
 import subprocess
@@ -579,12 +580,24 @@ def run_scrape(args):
         f"{len(extra_programs)} programas adicionales"
     )
 
+    total_channels = len(all_channels) + len(extra_channels)
+    total_programs = len(all_programs) + len(extra_programs)
+
     xml_content = build_xmltv(all_channels, all_programs, extra_channels, extra_programs)
     save_xmltv(xml_content, args.output)
-    log.info(
-        f"EPG listo: {len(all_channels) + len(extra_channels)} canales totales, "
-        f"{len(all_programs) + len(extra_programs)} programas → {args.output}"
-    )
+    log.info(f"EPG listo: {total_channels} canales totales, {total_programs} programas → {args.output}")
+
+    # Guardar stats.json para badges dinámicos del README
+    stats_path = Path(args.output).parent / "stats.json"
+    stats = {
+        "channels": total_channels,
+        "programs": total_programs,
+        "days": args.days if not args.date else 1,
+        "updated": datetime.now().strftime("%Y-%m-%d"),
+    }
+    stats_path.write_text(json.dumps(stats), encoding="utf-8")
+    log.info(f"Stats: {stats}")
+
     git_commit_and_push(args.output)
 
 
@@ -599,6 +612,7 @@ def git_commit_and_push(output_path: str, retries: int = 3, retry_delay: int = 3
     """
     repo_dir = Path(output_path).parent.resolve()
     xml_file = Path(output_path).name
+    stats_file = "stats.json"
 
     def run(cmd):
         return subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
@@ -619,7 +633,7 @@ def git_commit_and_push(output_path: str, retries: int = 3, retry_delay: int = 3
         return
 
     # Stage y commit
-    run(["git", "add", xml_file])
+    run(["git", "add", xml_file, stats_file])
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     commit = run(["git", "commit", "-m", f"EPG actualizado {timestamp}"])
     if commit.returncode != 0:
