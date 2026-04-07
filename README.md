@@ -3,7 +3,7 @@
 <div align="center">
 
 <!-- Visitas -->
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Fasotonet%2Fepg-scraper&count_bg=%2379C83D&title_bg=%23555555&title=visitas&edge_flat=true)](https://github.com/asotonet/epg-scraper)
+[![Visitors](https://visitor-badge.laobi.icu/badge?page_id=asotonet.epg-scraper&left_color=grey&right_color=green&left_text=visitas)](https://github.com/asotonet/epg-scraper)
 
 <!-- Estado del repo -->
 [![License](https://img.shields.io/github/license/asotonet/epg-scraper?style=flat-square)](LICENSE)
