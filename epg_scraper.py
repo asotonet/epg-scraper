@@ -13,12 +13,15 @@ Uso:
 """
 
 import argparse
+import gzip
 import hashlib
+import io
 import logging
 import re
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -37,6 +40,10 @@ BASE_URL      = "https://www.gatotv.com/guia_tv/completa"
 TIMEZONE      = "-0600"        # Guatemala / América Central (UTC-6)
 HOURS_RANGE   = range(0, 24, 2)  # 00-00, 02-00, 04-00 … 22-00
 REQUEST_DELAY = 1.5            # segundos entre requests
+
+# Fuente secundaria: epgshare01 (complementa canales no cubiertos por gatotv)
+EPGSHARE_BASE    = "https://epgshare01.online/epgshare01"
+EPGSHARE_SOURCES = ["CR1", "CO1", "PA1", "DO1", "SV1", "PE1", "EC1", "UY1", "CL1"]
 
 HEADERS = {
     "User-Agent": (
@@ -327,23 +334,158 @@ def scrape_date(
     return all_channels, all_programs
 
 
+# ─── Fuente secundaria: epgshare01 ───────────────────────────────────────────
+
+def _logo_key(url: str) -> Optional[str]:
+    """Extrae el slug de canal de una URL de logo (e.g. '7_de_costa_rica')."""
+    m = re.search(r"/([^/]+)-(?:mediano|peque[nñ]o|grande)\.(png|jpg)", url, re.I)
+    return m.group(1) if m else None
+
+
+def _normalize(text: str) -> str:
+    """Normaliza texto para comparación fuzzy: sin acentos, sin espaciales, minúsculas."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _build_gatotv_indices(channels: Dict) -> Tuple[Dict, Dict]:
+    """Construye índices de búsqueda para canales de gatotv."""
+    logo_idx: Dict[str, str] = {}   # logo_key → ch_id
+    norm_idx: Dict[str, str] = {}   # normalized_name → ch_id
+    for ch_id, ch in channels.items():
+        key = _logo_key(ch.get("logo", ""))
+        if key:
+            logo_idx[key] = ch_id
+        norm_idx[_normalize(ch["name"])] = ch_id
+        norm_idx[_normalize(ch_id.replace("_", " "))] = ch_id
+    return logo_idx, norm_idx
+
+
+def _find_gatotv_match(ch_el: ET.Element, logo_idx: Dict, norm_idx: Dict) -> Optional[str]:
+    """Intenta encontrar el ch_id de gatotv equivalente a un canal de epgshare01."""
+    # 1) Por logo
+    for icon in ch_el.findall("icon"):
+        key = _logo_key(icon.get("src", ""))
+        if key and key in logo_idx:
+            return logo_idx[key]
+
+    # 2) Por nombre normalizado (exacto o subconjunto)
+    name_el = ch_el.find("display-name")
+    if name_el is not None and name_el.text:
+        norm = _normalize(name_el.text)
+        if norm in norm_idx:
+            return norm_idx[norm]
+        for gatotv_norm, ch_id in norm_idx.items():
+            if norm and gatotv_norm and (norm in gatotv_norm or gatotv_norm in norm):
+                return ch_id
+    return None
+
+
+def fetch_epgshare_sources(
+    session,
+    gatotv_channels: Dict,
+    covered_ch_ids: set,
+) -> Tuple[Dict, List]:
+    """
+    Descarga fuentes de epgshare01 y devuelve canales y programas que NO están
+    cubiertos por gatotv.
+
+    Retorna:
+        extra_channels: {final_ch_id: ET.Element}   (elemento <channel> listo)
+        extra_programs: [ET.Element]                 (elementos <programme> listos)
+    """
+    logo_idx, norm_idx = _build_gatotv_indices(gatotv_channels)
+
+    extra_channels: Dict[str, ET.Element] = {}
+    extra_programs: List[ET.Element] = []
+    seen_epg_ids: set = set()   # para evitar duplicados entre países
+
+    for country in EPGSHARE_SOURCES:
+        url = f"{EPGSHARE_BASE}/epg_ripper_{country}.xml.gz"
+        log.info(f"epgshare01 [{country}]: descargando {url}")
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=60)
+            resp.raise_for_status()
+            with gzip.open(io.BytesIO(resp.content)) as gz:
+                root = ET.fromstring(gz.read())
+        except Exception as e:
+            log.warning(f"epgshare01 [{country}]: error → {e}")
+            continue
+
+        # ── Paso 1: mapear IDs de este archivo ───────────────────────────────
+        id_map: Dict[str, Optional[str]] = {}  # epg_ch_id → final_id (None = saltar)
+
+        for ch_el in root.findall("channel"):
+            epg_id = ch_el.get("id", "")
+            if epg_id in seen_epg_ids:
+                id_map[epg_id] = None
+                continue
+
+            matched = _find_gatotv_match(ch_el, logo_idx, norm_idx)
+
+            if matched and matched in covered_ch_ids:
+                # gatotv ya tiene este canal con programación → ignorar
+                id_map[epg_id] = None
+                log.debug(f"  epgshare {epg_id} → cubierto por gatotv ({matched})")
+                continue
+
+            # Usar el ID de gatotv si coincide (para coherencia de IDs)
+            final_id = matched if matched else epg_id
+
+            if final_id not in extra_channels and final_id not in covered_ch_ids:
+                ch_el.set("id", final_id)
+                # Conservar solo el primer <icon> para limpiar el XML
+                icons = ch_el.findall("icon")
+                for extra_icon in icons[1:]:
+                    ch_el.remove(extra_icon)
+                extra_channels[final_id] = ch_el
+                seen_epg_ids.add(epg_id)
+                log.debug(f"  epgshare {epg_id} → nuevo canal ({final_id})")
+
+            id_map[epg_id] = final_id
+
+        # ── Paso 2: agregar programas de canales no cubiertos ─────────────────
+        added = 0
+        for prog_el in root.findall("programme"):
+            epg_id = prog_el.get("channel", "")
+            final_id = id_map.get(epg_id)
+            if not final_id:
+                continue
+            prog_el.set("channel", final_id)
+            extra_programs.append(prog_el)
+            added += 1
+
+        log.info(f"epgshare01 [{country}]: {len([v for v in id_map.values() if v])} canales nuevos, {added} programas")
+
+    return extra_channels, extra_programs
+
+
 # ─── Generación XMLTV ────────────────────────────────────────────────────────
 
-def build_xmltv(all_channels: Dict, all_programs: List) -> str:
+def build_xmltv(
+    all_channels: Dict,
+    all_programs: List,
+    extra_channels: Optional[Dict] = None,
+    extra_programs: Optional[List] = None,
+) -> str:
     """Genera el XML en formato XMLTV estándar (compatible con la mayoría de servidores EPG)."""
     root = ET.Element("tv")
     root.set("source-info-name", "EPG Scraper")
     root.set("source-info-url", BASE_URL)
 
-    # ── <channel> ─────────────────────────────────────────────────────────────
+    # ── <channel> de gatotv ───────────────────────────────────────────────────
     for ch_id, ch in sorted(all_channels.items(), key=lambda x: x[0]):
         ch_el = ET.SubElement(root, "channel", id=ch_id)
         ET.SubElement(ch_el, "display-name").text = ch["name"]
         if ch["logo"]:
             ET.SubElement(ch_el, "icon", src=ch["logo"])
 
-    # ── <programme> ──────────────────────────────────────────────────────────
-    # Orden de atributos: start, stop, channel (requerido por parsers estrictos)
+    # ── <channel> de epgshare01 (canales complementarios) ────────────────────
+    if extra_channels:
+        for ch_id, ch_el in sorted(extra_channels.items()):
+            root.append(ch_el)
+
+    # ── <programme> de gatotv ────────────────────────────────────────────────
     for p in sorted(all_programs, key=lambda x: (x["channel"], x["start"] or "")):
         if not p["start"]:
             continue
@@ -373,6 +515,11 @@ def build_xmltv(all_channels: Dict, all_programs: List) -> str:
 
         if p.get("category"):
             ET.SubElement(prog_el, "category", lang="en").text = p["category"]
+
+    # ── <programme> de epgshare01 (canales complementarios) ──────────────────
+    if extra_programs:
+        for prog_el in sorted(extra_programs, key=lambda e: (e.get("channel", ""), e.get("start", ""))):
+            root.append(prog_el)
 
     # XML compacto (sin pretty-print) para mantener el archivo lo más pequeño posible
     return ET.tostring(root, encoding="unicode")
@@ -420,11 +567,23 @@ def run_scrape(args):
         log.error("No se encontraron canales. Usa --debug para inspeccionar el HTML.")
         sys.exit(1)
 
-    xml_content = build_xmltv(all_channels, all_programs)
+    # ── Complementar con epgshare01 ───────────────────────────────────────────
+    covered_ch_ids = {p["channel"] for p in all_programs}
+    log.info(f"gatotv: {len(all_channels)} canales, {len(covered_ch_ids)} con programación")
+
+    extra_channels, extra_programs = fetch_epgshare_sources(
+        session, all_channels, covered_ch_ids
+    )
+    log.info(
+        f"epgshare01: {len(extra_channels)} canales nuevos, "
+        f"{len(extra_programs)} programas adicionales"
+    )
+
+    xml_content = build_xmltv(all_channels, all_programs, extra_channels, extra_programs)
     save_xmltv(xml_content, args.output)
     log.info(
-        f"EPG listo: {len(all_channels)} canales, "
-        f"{len(all_programs)} programas → {args.output}"
+        f"EPG listo: {len(all_channels) + len(extra_channels)} canales totales, "
+        f"{len(all_programs) + len(extra_programs)} programas → {args.output}"
     )
     git_commit_and_push(args.output)
 
